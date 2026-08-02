@@ -36,10 +36,14 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.asin(Math.sqrt(a));
 }
 
-function withinWindow(settings) {
+function activeSession(settings) {
   const hhmm = new Date().toTimeString().slice(0, 5);
-  return hhmm >= settings.start_time && hhmm <= settings.end_time;
+  if (hhmm >= settings.morning_start && hhmm <= settings.morning_end) return 'morning';
+  if (hhmm >= settings.afternoon_start && hhmm <= settings.afternoon_end) return 'afternoon';
+  return null;
 }
+
+function sessionLabel(session) { return session === 'morning' ? 'Before lunch' : 'After lunch'; }
 
 function normalizeMobile(mobile) {
   return String(mobile || '').replace(/\D/g, '');
@@ -69,6 +73,10 @@ async function initializeDatabase() {
       radius_m DOUBLE PRECISION DEFAULT 100,
       start_time TEXT DEFAULT '00:00',
       end_time TEXT DEFAULT '23:59',
+      morning_start TEXT DEFAULT '09:00',
+      morning_end TEXT DEFAULT '13:00',
+      afternoon_start TEXT DEFAULT '14:00',
+      afternoon_end TEXT DEFAULT '17:00',
       venue_label TEXT DEFAULT 'Induction Venue'
     );
     CREATE TABLE IF NOT EXISTS attendance (
@@ -84,13 +92,23 @@ async function initializeDatabase() {
       accuracy DOUBLE PRECISION,
       distance_m DOUBLE PRECISION,
       device_id TEXT NOT NULL,
-      UNIQUE(mobile, date),
-      UNIQUE(device_id, date)
+      session TEXT NOT NULL DEFAULT 'morning'
     );
+    ALTER TABLE settings ADD COLUMN IF NOT EXISTS morning_start TEXT DEFAULT '09:00';
+    ALTER TABLE settings ADD COLUMN IF NOT EXISTS morning_end TEXT DEFAULT '13:00';
+    ALTER TABLE settings ADD COLUMN IF NOT EXISTS afternoon_start TEXT DEFAULT '14:00';
+    ALTER TABLE settings ADD COLUMN IF NOT EXISTS afternoon_end TEXT DEFAULT '17:00';
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS session TEXT DEFAULT 'morning';
+    UPDATE attendance SET session = 'morning' WHERE session IS NULL;
+    ALTER TABLE attendance ALTER COLUMN session SET NOT NULL;
+    ALTER TABLE attendance DROP CONSTRAINT IF EXISTS attendance_mobile_date_key;
+    ALTER TABLE attendance DROP CONSTRAINT IF EXISTS attendance_device_id_date_key;
     CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(date);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_att_mobile_date_session ON attendance(mobile, date, session);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_att_device_date_session ON attendance(device_id, date, session);
   `);
-  await pool.query(`INSERT INTO settings (id, venue_lat, venue_lng, radius_m, start_time, end_time, venue_label)
-    VALUES (1, 26.4499, 74.6399, 100, '00:00', '23:59', 'Induction Venue')
+  await pool.query(`INSERT INTO settings (id, venue_lat, venue_lng, radius_m, start_time, end_time, morning_start, morning_end, afternoon_start, afternoon_end, venue_label)
+    VALUES (1, 26.4499, 74.6399, 100, '00:00', '23:59', '09:00', '13:00', '14:00', '17:00', 'Induction Venue')
     ON CONFLICT (id) DO NOTHING`);
 }
 
@@ -99,16 +117,17 @@ app.get('/api/status', async (req, res, next) => {
     const { deviceId, mobile } = req.query;
     const date = todayStr();
     const venue = await settings();
+    const session = activeSession(venue);
     const deviceMarked = deviceId
-      ? (await pool.query('SELECT 1 FROM attendance WHERE device_id = $1 AND date = $2', [deviceId, date])).rowCount > 0
+      ? (await pool.query('SELECT 1 FROM attendance WHERE device_id = $1 AND date = $2 AND session = $3', [deviceId, date, session])).rowCount > 0
       : false;
     const mobileMarked = mobile
-      ? (await pool.query('SELECT 1 FROM attendance WHERE mobile = $1 AND date = $2', [normalizeMobile(mobile), date])).rowCount > 0
+      ? (await pool.query('SELECT 1 FROM attendance WHERE mobile = $1 AND date = $2 AND session = $3', [normalizeMobile(mobile), date, session])).rowCount > 0
       : false;
     res.json({
       ok: true, date,
       venue: { lat: venue.venue_lat, lng: venue.venue_lng, radius: venue.radius_m, label: venue.venue_label },
-      window: { start: venue.start_time, end: venue.end_time, open: withinWindow(venue) },
+      window: { open: !!session, session, message: `Attendance is open ${venue.morning_start}–${venue.morning_end} (before lunch) and ${venue.afternoon_start}–${venue.afternoon_end} (after lunch).` },
       deviceAlreadyMarked: deviceMarked,
       mobileAlreadyMarked: mobileMarked,
     });
@@ -132,8 +151,9 @@ app.post('/api/attendance/mark', async (req, res, next) => {
 
     const venue = await settings();
     const date = todayStr();
-    if (!withinWindow(venue)) {
-      return res.status(403).json({ ok: false, error: `Attendance is only open between ${venue.start_time} and ${venue.end_time}.` });
+    const session = activeSession(venue);
+    if (!session) {
+      return res.status(403).json({ ok: false, error: `Attendance is closed. Open: ${venue.morning_start}–${venue.morning_end} (before lunch) and ${venue.afternoon_start}–${venue.afternoon_end} (after lunch).` });
     }
     const distance = distanceMeters(lat, lng, venue.venue_lat, venue.venue_lng);
     if (distance > venue.radius_m) {
@@ -142,16 +162,16 @@ app.post('/api/attendance/mark', async (req, res, next) => {
 
     try {
       await pool.query(`INSERT INTO attendance
-        (name, branch, mobile, email, date, timestamp, lat, lng, accuracy, distance_m, device_id)
-        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
-      [name, branch, mobileDigits, email || null, date, lat, lng, Number.isFinite(accuracy) ? accuracy : null, distance, deviceId]);
+        (name, branch, mobile, email, date, timestamp, lat, lng, accuracy, distance_m, device_id, session)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11)`,
+      [name, branch, mobileDigits, email || null, date, lat, lng, Number.isFinite(accuracy) ? accuracy : null, distance, deviceId, session]);
     } catch (error) {
       if (error.code === '23505') {
-        return res.status(409).json({ ok: false, error: 'This mobile number or device has already been used to mark attendance today.' });
+        return res.status(409).json({ ok: false, error: `This mobile number or device has already marked ${sessionLabel(session)} attendance today.` });
       }
       throw error;
     }
-    res.json({ ok: true, message: `Attendance marked for ${name}.`, distance: Math.round(distance) });
+    res.json({ ok: true, message: `${sessionLabel(session)} attendance marked for ${name}.`, distance: Math.round(distance) });
   } catch (error) { next(error); }
 });
 
@@ -166,13 +186,13 @@ app.get('/api/admin/settings', requireAdmin, async (req, res, next) => {
 
 app.post('/api/admin/settings', requireAdmin, async (req, res, next) => {
   try {
-    const { venue_lat, venue_lng, radius_m, start_time, end_time, venue_label } = req.body || {};
-    if (![venue_lat, venue_lng, radius_m].every(Number.isFinite) || !start_time || !end_time || !venue_label?.trim()) {
+    const { venue_lat, venue_lng, radius_m, morning_start, morning_end, afternoon_start, afternoon_end, venue_label } = req.body || {};
+    if (![venue_lat, venue_lng, radius_m].every(Number.isFinite) || !morning_start || !morning_end || !afternoon_start || !afternoon_end || !venue_label?.trim()) {
       return res.status(400).json({ ok: false, error: 'Enter a venue label, valid coordinates, radius, and time window.' });
     }
     await pool.query(`UPDATE settings SET venue_lat = $1, venue_lng = $2, radius_m = $3,
-      start_time = $4, end_time = $5, venue_label = $6 WHERE id = 1`,
-    [venue_lat, venue_lng, radius_m, start_time, end_time, venue_label.trim()]);
+      morning_start = $4, morning_end = $5, afternoon_start = $6, afternoon_end = $7, venue_label = $8 WHERE id = 1`,
+    [venue_lat, venue_lng, radius_m, morning_start, morning_end, afternoon_start, afternoon_end, venue_label.trim()]);
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -180,20 +200,44 @@ app.post('/api/admin/settings', requireAdmin, async (req, res, next) => {
 app.get('/api/admin/attendance', requireAdmin, async (req, res, next) => {
   try {
     const date = req.query.date || todayStr();
-    const rows = (await pool.query(`SELECT name, branch, mobile, email, timestamp, distance_m
+    const rows = (await pool.query(`SELECT id, name, branch, mobile, email, session, timestamp, distance_m
       FROM attendance WHERE date = $1 ORDER BY timestamp`, [date])).rows;
     res.json({ ok: true, date, present: rows, presentCount: rows.length, branchCount: new Set(rows.map((row) => row.branch)).size });
+  } catch (error) { next(error); }
+});
+
+app.put('/api/admin/attendance/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { name, branch, mobile, email, session } = req.body || {};
+    const mobileDigits = normalizeMobile(mobile);
+    if (!name?.trim() || !branch?.trim() || !isValidMobile(mobileDigits) || !['morning', 'afternoon'].includes(session)) {
+      return res.status(400).json({ ok: false, error: 'Enter valid attendance details.' });
+    }
+    await pool.query(`UPDATE attendance SET name = $1, branch = $2, mobile = $3, email = $4, session = $5 WHERE id = $6`,
+      [name.trim(), branch.trim(), mobileDigits, typeof email === 'string' ? email.trim() || null : null, session, req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ ok: false, error: 'That mobile/device already has this session attendance.' });
+    next(error);
+  }
+});
+
+app.delete('/api/admin/attendance/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const result = await pool.query('DELETE FROM attendance WHERE id = $1', [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ ok: false, error: 'Attendance record not found.' });
+    res.json({ ok: true });
   } catch (error) { next(error); }
 });
 
 app.get('/api/admin/attendance/export', requireAdmin, async (req, res, next) => {
   try {
     const date = req.query.date || todayStr();
-    const rows = (await pool.query(`SELECT name, branch, mobile, email, timestamp, ROUND(distance_m::numeric, 1) AS distance_m
+    const rows = (await pool.query(`SELECT name, branch, mobile, email, session, timestamp, ROUND(distance_m::numeric, 1) AS distance_m
       FROM attendance WHERE date = $1 ORDER BY timestamp`, [date])).rows;
     const value = (item) => `"${String(item ?? '').replace(/"/g, '""')}"`;
-    const csv = ['name,branch,mobile,email,timestamp,distance_m', ...rows.map((row) =>
-      [row.name, row.branch, row.mobile, row.email, row.timestamp.toISOString(), row.distance_m].map(value).join(','))].join('\n');
+    const csv = ['name,branch,mobile,email,session,timestamp,distance_m', ...rows.map((row) =>
+      [row.name, row.branch, row.mobile, row.email, row.session, row.timestamp.toISOString(), row.distance_m].map(value).join(','))].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="attendance_${date}.csv"`);
     res.send(csv);

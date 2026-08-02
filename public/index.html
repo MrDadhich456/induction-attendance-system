@@ -184,12 +184,14 @@
       const data = await readApiResponse(res);
       venueLabel.textContent = `${data.venue.label} · within ${data.venue.radius}m`;
       if(data.deviceAlreadyMarked){
-        showMsg('This device has already marked attendance today. Come back tomorrow.', 'info');
+        showMsg(`This device has already marked ${data.window.session === 'morning' ? 'before-lunch' : 'after-lunch'} attendance.`, 'info');
         btn.disabled = true;
         setRadar('idle');
       } else if(!data.window.open){
-        showMsg(`Check-in is only open between ${data.window.start} and ${data.window.end}.`, 'info');
+        showMsg(data.window.message, 'info');
         btn.disabled = true;
+      } else {
+        showMsg(`${data.window.session === 'morning' ? 'Before-lunch' : 'After-lunch'} attendance is open.`, 'info');
       }
     }catch(e){
       venueLabel.textContent = 'Could not reach the server.';

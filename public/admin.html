@@ -75,8 +75,12 @@
         <div class="field"><button class="ghost" style="margin-top:22px;width:100%;" onclick="useMyLocation()">Use my location</button></div>
       </div>
       <div class="row2">
-        <div class="field"><label>Window start</label><input id="startTime" type="time" /></div>
-        <div class="field"><label>Window end</label><input id="endTime" type="time" /></div>
+        <div class="field"><label>Before lunch — start</label><input id="morningStart" type="time" /></div>
+        <div class="field"><label>Before lunch — end</label><input id="morningEnd" type="time" /></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>After lunch — start</label><input id="afternoonStart" type="time" /></div>
+        <div class="field"><label>After lunch — end</label><input id="afternoonEnd" type="time" /></div>
       </div>
       <button class="primary" onclick="saveSettings()">Save settings</button>
     </div>
@@ -92,7 +96,7 @@
       </div>
     </div>
     <table>
-      <thead><tr><th>Name</th><th>Branch</th><th>Mobile</th><th>Email</th><th>Time</th><th>Distance</th></tr></thead>
+      <thead><tr><th>Name</th><th>Branch</th><th>Mobile</th><th>Email</th><th>Session</th><th>Time</th><th>Distance</th><th>Actions</th></tr></thead>
       <tbody id="attBody"></tbody>
     </table>
   </div>
@@ -102,6 +106,7 @@
 
 <script>
   let PW = sessionStorage.getItem('admin_pw') || '';
+  let attendanceById = new Map();
 
   function toast(text){
     const t = document.getElementById('toast');
@@ -156,8 +161,10 @@
     document.getElementById('venueLat').value = s.venue_lat;
     document.getElementById('venueLng').value = s.venue_lng;
     document.getElementById('radius').value = s.radius_m;
-    document.getElementById('startTime').value = s.start_time;
-    document.getElementById('endTime').value = s.end_time;
+    document.getElementById('morningStart').value = s.morning_start;
+    document.getElementById('morningEnd').value = s.morning_end;
+    document.getElementById('afternoonStart').value = s.afternoon_start;
+    document.getElementById('afternoonEnd').value = s.afternoon_end;
   }
 
   async function saveSettings(){
@@ -166,8 +173,10 @@
       venue_lat: parseFloat(document.getElementById('venueLat').value),
       venue_lng: parseFloat(document.getElementById('venueLng').value),
       radius_m: parseFloat(document.getElementById('radius').value),
-      start_time: document.getElementById('startTime').value,
-      end_time: document.getElementById('endTime').value,
+      morning_start: document.getElementById('morningStart').value,
+      morning_end: document.getElementById('morningEnd').value,
+      afternoon_start: document.getElementById('afternoonStart').value,
+      afternoon_end: document.getElementById('afternoonEnd').value,
     })});
     toast('Settings saved');
   }
@@ -183,14 +192,35 @@
   async function loadAttendance(){
     const date = document.getElementById('dateFilter').value;
     const data = await api('/api/admin/attendance?date=' + date);
+    attendanceById = new Map(data.present.map(record => [record.id, record]));
     document.getElementById('statPresent').textContent = data.presentCount;
     document.getElementById('statBranches').textContent = data.branchCount;
     const body = document.getElementById('attBody');
     body.innerHTML = data.present.map(r => `<tr>
-      <td>${r.name}</td><td>${r.branch}</td><td>${r.mobile}</td><td>${r.email || '—'}</td>
-      <td>${new Date(r.timestamp).toLocaleTimeString()}</td>
+      <td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.branch)}</td><td>${escapeHtml(r.mobile)}</td><td>${escapeHtml(r.email || '—')}</td>
+      <td>${r.session === 'morning' ? 'Before lunch' : 'After lunch'}</td><td>${new Date(r.timestamp).toLocaleTimeString()}</td>
       <td>${r.distance_m ? Math.round(r.distance_m)+'m' : '—'}</td>
-    </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:#8B93A6;">No check-ins yet</td></tr>';
+      <td><button class="ghost" onclick="editAttendance(${r.id})">Edit</button> <button class="ghost" onclick="deleteAttendance(${r.id})">Delete</button></td>
+    </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:#8B93A6;">No check-ins yet</td></tr>';
+  }
+
+  function escapeHtml(value){ return String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
+
+  async function editAttendance(id){
+    const record = attendanceById.get(id); if(!record) return;
+    const name = prompt('Full name', record.name); if(name === null) return;
+    const branch = prompt('Branch', record.branch); if(branch === null) return;
+    const mobile = prompt('10-digit mobile number', record.mobile); if(mobile === null) return;
+    const email = prompt('Email (optional)', record.email || ''); if(email === null) return;
+    const session = prompt('Session: morning or afternoon', record.session); if(session === null) return;
+    const data = await api('/api/admin/attendance/' + record.id, { method:'PUT', body:JSON.stringify({name, branch, mobile, email, session:session.toLowerCase()}) });
+    toast(data.ok ? 'Attendance updated' : data.error); loadAttendance();
+  }
+
+  async function deleteAttendance(id){
+    if(!confirm('Delete this attendance record? This cannot be undone.')) return;
+    const data = await api('/api/admin/attendance/' + id, { method:'DELETE' });
+    toast(data.ok ? 'Attendance deleted' : data.error); loadAttendance();
   }
 
   function exportCsv(){
