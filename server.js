@@ -1,97 +1,29 @@
 const express = require('express');
-const Database = require('better-sqlite3');
-const fs = require('fs');
+const { Pool } = require('pg');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme123';
-const dataDir = process.env.DATA_DIR || __dirname;
+const DATABASE_URL = process.env.DATABASE_URL;
 
 if (process.env.NODE_ENV === 'production' && !process.env.ADMIN_PASSWORD) {
   throw new Error('ADMIN_PASSWORD must be set when running in production.');
 }
-fs.mkdirSync(dataDir, { recursive: true });
-
-const db = new Database(path.join(dataDir, 'attendance.db'));
-db.pragma('journal_mode = WAL');
-
-// ---------- schema ----------
-db.exec(`
-CREATE TABLE IF NOT EXISTS settings (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  venue_lat REAL,
-  venue_lng REAL,
-  radius_m REAL DEFAULT 100,
-  start_time TEXT DEFAULT '00:00',
-  end_time TEXT DEFAULT '23:59',
-  venue_label TEXT DEFAULT 'Induction Venue'
-);
-
-CREATE TABLE IF NOT EXISTS attendance (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  branch TEXT NOT NULL,
-  mobile TEXT NOT NULL,
-  email TEXT,
-  date TEXT NOT NULL,
-  timestamp TEXT NOT NULL,
-  lat REAL,
-  lng REAL,
-  accuracy REAL,
-  distance_m REAL,
-  device_id TEXT NOT NULL,
-  UNIQUE(mobile, date)
-);
-
-`);
-
-// Earlier versions of this project used a roll-number-only attendance table.
-// Keep that data intact, but create the current self-registration schema so a
-// new check-in cannot fail with "no column named name".
-const attendanceColumns = db.prepare('PRAGMA table_info(attendance)').all().map((column) => column.name);
-const currentAttendanceColumns = ['name', 'branch', 'mobile', 'email'];
-if (!currentAttendanceColumns.every((column) => attendanceColumns.includes(column))) {
-  const legacyTable = `attendance_legacy_${Date.now()}`;
-  db.exec(`ALTER TABLE attendance RENAME TO ${legacyTable};
-    DROP INDEX IF EXISTS idx_att_date;
-    DROP INDEX IF EXISTS idx_att_device_date;
-    CREATE TABLE attendance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      branch TEXT NOT NULL,
-      mobile TEXT NOT NULL,
-      email TEXT,
-      date TEXT NOT NULL,
-      timestamp TEXT NOT NULL,
-      lat REAL,
-      lng REAL,
-      accuracy REAL,
-      distance_m REAL,
-      device_id TEXT NOT NULL,
-      UNIQUE(mobile, date)
-    );`);
-  console.warn(`Migrated an incompatible legacy attendance table to ${legacyTable}.`);
+if (!DATABASE_URL) {
+  throw new Error('DATABASE_URL must be set to a PostgreSQL connection URL.');
 }
 
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(date);
-  CREATE INDEX IF NOT EXISTS idx_att_device_date ON attendance(device_id, date);
-`);
-
-const settingsRow = db.prepare('SELECT * FROM settings WHERE id = 1').get();
-if (!settingsRow) {
-  db.prepare(`INSERT INTO settings (id, venue_lat, venue_lng, radius_m, start_time, end_time, venue_label)
-              VALUES (1, 26.4499, 74.6399, 100, '00:00', '23:59', 'Induction Venue')`).run();
-}
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+});
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------- helpers ----------
 function todayStr() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10);
 }
 
 function distanceMeters(lat1, lon1, lat2, lon2) {
@@ -99,158 +31,183 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
   const toRad = (d) => (d * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
+  const a = Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.asin(Math.sqrt(a));
 }
 
+function withinWindow(settings) {
+  const hhmm = new Date().toTimeString().slice(0, 5);
+  return hhmm >= settings.start_time && hhmm <= settings.end_time;
+}
+
+function normalizeMobile(mobile) {
+  return String(mobile || '').replace(/\D/g, '');
+}
+
+function isValidMobile(mobile) {
+  return /^\d{10}$/.test(normalizeMobile(mobile));
+}
+
+async function settings() {
+  return (await pool.query('SELECT * FROM settings WHERE id = 1')).rows[0];
+}
+
 function requireAdmin(req, res, next) {
-  const pass = req.headers['x-admin-password'];
-  if (pass !== ADMIN_PASSWORD) {
+  if (req.headers['x-admin-password'] !== ADMIN_PASSWORD) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   next();
 }
 
-function withinWindow(settings) {
-  const now = new Date();
-  const hhmm = now.toTimeString().slice(0, 5);
-  return hhmm >= settings.start_time && hhmm <= settings.end_time;
+async function initializeDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      venue_lat DOUBLE PRECISION,
+      venue_lng DOUBLE PRECISION,
+      radius_m DOUBLE PRECISION DEFAULT 100,
+      start_time TEXT DEFAULT '00:00',
+      end_time TEXT DEFAULT '23:59',
+      venue_label TEXT DEFAULT 'Induction Venue'
+    );
+    CREATE TABLE IF NOT EXISTS attendance (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      mobile TEXT NOT NULL,
+      email TEXT,
+      date TEXT NOT NULL,
+      timestamp TIMESTAMPTZ NOT NULL,
+      lat DOUBLE PRECISION,
+      lng DOUBLE PRECISION,
+      accuracy DOUBLE PRECISION,
+      distance_m DOUBLE PRECISION,
+      device_id TEXT NOT NULL,
+      UNIQUE(mobile, date),
+      UNIQUE(device_id, date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_att_date ON attendance(date);
+  `);
+  await pool.query(`INSERT INTO settings (id, venue_lat, venue_lng, radius_m, start_time, end_time, venue_label)
+    VALUES (1, 26.4499, 74.6399, 100, '00:00', '23:59', 'Induction Venue')
+    ON CONFLICT (id) DO NOTHING`);
 }
 
-function normalizeMobile(m) {
-  return String(m || '').replace(/\D/g, '');
-}
-
-function isValidMobile(m) {
-  const digits = normalizeMobile(m);
-  return /^\d{10}$/.test(digits);
-}
-
-// ---------- public: check status ----------
-app.get('/api/status', (req, res) => {
-  const { deviceId, mobile } = req.query;
-  const date = todayStr();
-  const settings = db.prepare('SELECT * FROM settings WHERE id = 1').get();
-
-  const deviceMarked = deviceId
-    ? db.prepare('SELECT 1 FROM attendance WHERE device_id = ? AND date = ?').get(deviceId, date)
-    : null;
-  const mobileMarked = mobile
-    ? db.prepare('SELECT 1 FROM attendance WHERE mobile = ? AND date = ?').get(normalizeMobile(mobile), date)
-    : null;
-
-  res.json({
-    ok: true,
-    date,
-    venue: { lat: settings.venue_lat, lng: settings.venue_lng, radius: settings.radius_m, label: settings.venue_label },
-    window: { start: settings.start_time, end: settings.end_time, open: withinWindow(settings) },
-    deviceAlreadyMarked: !!deviceMarked,
-    mobileAlreadyMarked: !!mobileMarked,
-  });
-});
-
-// ---------- public: mark attendance ----------
-app.post('/api/attendance/mark', (req, res) => {
-  let { name, branch, mobile, email, lat, lng, accuracy, deviceId } = req.body || {};
-
-  name = (name || '').trim();
-  branch = (branch || '').trim();
-  email = (email || '').trim();
-  const mobileDigits = normalizeMobile(mobile);
-
-  if (!name || !branch || !mobileDigits || typeof lat !== 'number' || typeof lng !== 'number' || !deviceId) {
-    return res.status(400).json({ ok: false, error: 'Name, branch, mobile number, and location are required.' });
-  }
-  if (!isValidMobile(mobileDigits)) {
-    return res.status(400).json({ ok: false, error: 'Enter a valid 10-digit mobile number.' });
-  }
-
-  const settings = db.prepare('SELECT * FROM settings WHERE id = 1').get();
-  const date = todayStr();
-  const timestamp = new Date().toISOString();
-
-  if (!withinWindow(settings)) {
-    return res.status(403).json({ ok: false, error: `Attendance is only open between ${settings.start_time} and ${settings.end_time}.` });
-  }
-
-  const alreadyByMobile = db.prepare('SELECT 1 FROM attendance WHERE mobile = ? AND date = ?').get(mobileDigits, date);
-  if (alreadyByMobile) {
-    return res.status(409).json({ ok: false, error: 'This mobile number has already been used to mark attendance today.' });
-  }
-
-  const alreadyByDevice = db.prepare('SELECT name FROM attendance WHERE device_id = ? AND date = ?').get(deviceId, date);
-  if (alreadyByDevice) {
-    return res.status(409).json({ ok: false, error: 'This device has already been used to mark attendance today.' });
-  }
-
-  const dist = distanceMeters(lat, lng, settings.venue_lat, settings.venue_lng);
-  if (dist > settings.radius_m) {
-    return res.status(403).json({
-      ok: false,
-      error: `You appear to be ${Math.round(dist)}m from the venue. You must be within ${settings.radius_m}m to mark attendance.`,
-      distance: Math.round(dist),
-    });
-  }
-
+app.get('/api/status', async (req, res, next) => {
   try {
-    db.prepare(`INSERT INTO attendance (name, branch, mobile, email, date, timestamp, lat, lng, accuracy, distance_m, device_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(name, branch, mobileDigits, email || null, date, timestamp, lat, lng, accuracy ?? null, dist, deviceId);
-  } catch (e) {
-    return res.status(409).json({ ok: false, error: 'Attendance already recorded (duplicate submission).' });
-  }
-
-  res.json({ ok: true, message: `Attendance marked for ${name}.`, distance: Math.round(dist) });
+    const { deviceId, mobile } = req.query;
+    const date = todayStr();
+    const venue = await settings();
+    const deviceMarked = deviceId
+      ? (await pool.query('SELECT 1 FROM attendance WHERE device_id = $1 AND date = $2', [deviceId, date])).rowCount > 0
+      : false;
+    const mobileMarked = mobile
+      ? (await pool.query('SELECT 1 FROM attendance WHERE mobile = $1 AND date = $2', [normalizeMobile(mobile), date])).rowCount > 0
+      : false;
+    res.json({
+      ok: true, date,
+      venue: { lat: venue.venue_lat, lng: venue.venue_lng, radius: venue.radius_m, label: venue.venue_label },
+      window: { start: venue.start_time, end: venue.end_time, open: withinWindow(venue) },
+      deviceAlreadyMarked: deviceMarked,
+      mobileAlreadyMarked: mobileMarked,
+    });
+  } catch (error) { next(error); }
 });
 
-// ================= ADMIN =================
+app.post('/api/attendance/mark', async (req, res, next) => {
+  try {
+    let { name, branch, mobile, email, lat, lng, accuracy, deviceId } = req.body || {};
+    name = typeof name === 'string' ? name.trim() : '';
+    branch = typeof branch === 'string' ? branch.trim() : '';
+    email = typeof email === 'string' ? email.trim() : '';
+    const mobileDigits = normalizeMobile(mobile);
+
+    if (!name || !branch || !mobileDigits || !Number.isFinite(lat) || !Number.isFinite(lng) || !deviceId) {
+      return res.status(400).json({ ok: false, error: 'Name, branch, mobile number, and location are required.' });
+    }
+    if (!isValidMobile(mobileDigits)) {
+      return res.status(400).json({ ok: false, error: 'Enter a valid 10-digit mobile number.' });
+    }
+
+    const venue = await settings();
+    const date = todayStr();
+    if (!withinWindow(venue)) {
+      return res.status(403).json({ ok: false, error: `Attendance is only open between ${venue.start_time} and ${venue.end_time}.` });
+    }
+    const distance = distanceMeters(lat, lng, venue.venue_lat, venue.venue_lng);
+    if (distance > venue.radius_m) {
+      return res.status(403).json({ ok: false, error: `You appear to be ${Math.round(distance)}m from the venue. You must be within ${venue.radius_m}m to mark attendance.`, distance: Math.round(distance) });
+    }
+
+    try {
+      await pool.query(`INSERT INTO attendance
+        (name, branch, mobile, email, date, timestamp, lat, lng, accuracy, distance_m, device_id)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10)`,
+      [name, branch, mobileDigits, email || null, date, lat, lng, Number.isFinite(accuracy) ? accuracy : null, distance, deviceId]);
+    } catch (error) {
+      if (error.code === '23505') {
+        return res.status(409).json({ ok: false, error: 'This mobile number or device has already been used to mark attendance today.' });
+      }
+      throw error;
+    }
+    res.json({ ok: true, message: `Attendance marked for ${name}.`, distance: Math.round(distance) });
+  } catch (error) { next(error); }
+});
 
 app.post('/api/admin/login', (req, res) => {
-  const { password } = req.body || {};
-  if (password === ADMIN_PASSWORD) return res.json({ ok: true });
+  if (req.body?.password === ADMIN_PASSWORD) return res.json({ ok: true });
   res.status(401).json({ ok: false, error: 'Wrong password' });
 });
 
-app.get('/api/admin/settings', requireAdmin, (req, res) => {
-  res.json(db.prepare('SELECT * FROM settings WHERE id = 1').get());
+app.get('/api/admin/settings', requireAdmin, async (req, res, next) => {
+  try { res.json(await settings()); } catch (error) { next(error); }
 });
 
-app.post('/api/admin/settings', requireAdmin, (req, res) => {
-  const { venue_lat, venue_lng, radius_m, start_time, end_time, venue_label } = req.body || {};
-  db.prepare(`UPDATE settings SET venue_lat=?, venue_lng=?, radius_m=?, start_time=?, end_time=?, venue_label=? WHERE id=1`)
-    .run(venue_lat, venue_lng, radius_m, start_time, end_time, venue_label);
-  res.json({ ok: true });
+app.post('/api/admin/settings', requireAdmin, async (req, res, next) => {
+  try {
+    const { venue_lat, venue_lng, radius_m, start_time, end_time, venue_label } = req.body || {};
+    if (![venue_lat, venue_lng, radius_m].every(Number.isFinite) || !start_time || !end_time || !venue_label?.trim()) {
+      return res.status(400).json({ ok: false, error: 'Enter a venue label, valid coordinates, radius, and time window.' });
+    }
+    await pool.query(`UPDATE settings SET venue_lat = $1, venue_lng = $2, radius_m = $3,
+      start_time = $4, end_time = $5, venue_label = $6 WHERE id = 1`,
+    [venue_lat, venue_lng, radius_m, start_time, end_time, venue_label.trim()]);
+    res.json({ ok: true });
+  } catch (error) { next(error); }
 });
 
-app.get('/api/admin/attendance', requireAdmin, (req, res) => {
-  const date = req.query.date || todayStr();
-  const rows = db.prepare(`
-    SELECT name, branch, mobile, email, timestamp, distance_m
-    FROM attendance WHERE date = ? ORDER BY timestamp
-  `).all(date);
-  const branches = [...new Set(rows.map(r => r.branch))].length;
-  res.json({ ok: true, date, present: rows, presentCount: rows.length, branchCount: branches });
+app.get('/api/admin/attendance', requireAdmin, async (req, res, next) => {
+  try {
+    const date = req.query.date || todayStr();
+    const rows = (await pool.query(`SELECT name, branch, mobile, email, timestamp, distance_m
+      FROM attendance WHERE date = $1 ORDER BY timestamp`, [date])).rows;
+    res.json({ ok: true, date, present: rows, presentCount: rows.length, branchCount: new Set(rows.map((row) => row.branch)).size });
+  } catch (error) { next(error); }
 });
 
-app.get('/api/admin/attendance/export', requireAdmin, (req, res) => {
-  const date = req.query.date || todayStr();
-  const rows = db.prepare(`
-    SELECT name, branch, mobile, email, timestamp, ROUND(distance_m,1) as distance_m
-    FROM attendance WHERE date = ? ORDER BY timestamp
-  `).all(date);
-  let csv = 'name,branch,mobile,email,timestamp,distance_m\n';
-  csv += rows.map(r => `"${r.name}","${r.branch}",${r.mobile},"${r.email || ''}",${r.timestamp},${r.distance_m}`).join('\n');
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="attendance_${date}.csv"`);
-  res.send(csv);
+app.get('/api/admin/attendance/export', requireAdmin, async (req, res, next) => {
+  try {
+    const date = req.query.date || todayStr();
+    const rows = (await pool.query(`SELECT name, branch, mobile, email, timestamp, ROUND(distance_m::numeric, 1) AS distance_m
+      FROM attendance WHERE date = $1 ORDER BY timestamp`, [date])).rows;
+    const value = (item) => `"${String(item ?? '').replace(/"/g, '""')}"`;
+    const csv = ['name,branch,mobile,email,timestamp,distance_m', ...rows.map((row) =>
+      [row.name, row.branch, row.mobile, row.email, row.timestamp.toISOString(), row.distance_m].map(value).join(','))].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="attendance_${date}.csv"`);
+    res.send(csv);
+  } catch (error) { next(error); }
 });
 
-// Do not send an HTML error page to API clients when an unexpected error occurs.
-app.use((err, req, res, next) => {
-  console.error('Unhandled request error:', err);
+app.use((error, req, res, next) => {
+  console.error('Unhandled request error:', error);
   res.status(500).json({ ok: false, error: 'The server could not complete the request. Please try again.' });
 });
 
-app.listen(PORT, () => console.log(`Attendance server running on http://localhost:${PORT}`));
+initializeDatabase()
+  .then(() => app.listen(PORT, () => console.log(`Attendance server running on http://localhost:${PORT}`)))
+  .catch((error) => {
+    console.error('Database startup failed:', error);
+    process.exit(1);
+  });

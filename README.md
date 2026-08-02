@@ -33,12 +33,12 @@ service and set these environment variables on the host:
 ```
 NODE_ENV=production
 ADMIN_PASSWORD=a-long-unique-password
-DATA_DIR=/path/to/a-persistent-disk
+DATABASE_URL=postgresql://user:password@host:5432/database
 ```
 
-`DATA_DIR` is where the SQLite attendance database is stored. It **must** be a
-persistent disk/volume in production, otherwise records can disappear when the
-host restarts or deploys the service.
+Create a managed PostgreSQL database (for example, Render Postgres), then set
+its internal connection URL as `DATABASE_URL`. This keeps attendance and venue
+settings across service restarts and deployments.
 
 ## First-time setup
 1. Go to `/admin.html`, log in.
