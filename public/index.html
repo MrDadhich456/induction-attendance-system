@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Induction Check-In</title>
+<style>
+  :root{
+    --bg: #F1F3F6;
+    --card: #FFFFFF;
+    --ink: #1B2333;
+    --ink-soft: #5B6478;
+    --primary: #2B4C7E;
+    --primary-dark: #1D3557;
+    --accent: #E8A33D;
+    --good: #2E7D5B;
+    --bad: #B3432B;
+    --ring: rgba(43,76,126,0.14);
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card{
+    width:100%; max-width:420px; background:var(--card); border-radius:20px;
+    padding:32px 28px 28px; box-shadow: 0 1px 3px rgba(20,30,50,0.06), 0 12px 32px rgba(20,30,50,0.08);
+  }
+  .eyebrow{
+    font-size:12px; letter-spacing:0.14em; text-transform:uppercase; color:var(--primary);
+    font-weight:700; margin-bottom:6px;
+  }
+  h1{ font-size:22px; margin:0 0 4px; letter-spacing:-0.01em; }
+  .venue{ font-size:13.5px; color:var(--ink-soft); margin-bottom:22px; }
+
+  .radar{
+    width:96px; height:96px; margin:4px auto 20px; position:relative;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .radar .ring{
+    position:absolute; border-radius:50%; border:2px solid var(--primary);
+    opacity:0; animation: pulse 2.2s ease-out infinite;
+  }
+  .radar .ring:nth-child(2){ animation-delay: 0.7s; }
+  .radar .ring:nth-child(3){ animation-delay: 1.4s; }
+  @keyframes pulse{
+    0%{ width:20px; height:20px; opacity:0.55; }
+    100%{ width:96px; height:96px; opacity:0; }
+  }
+  .pin{
+    width:14px; height:14px; border-radius:50% 50% 50% 0; background:var(--primary);
+    transform: rotate(-45deg); z-index:2;
+  }
+  .radar.idle .ring{ animation:none; opacity:0; }
+  .radar.idle .pin{ background: var(--ink-soft); }
+  .radar.ok .pin{ background: var(--good); }
+  .radar.err .pin{ background: var(--bad); }
+  .radar.ok .ring, .radar.err .ring{ animation:none; opacity:0; }
+
+  label{ display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px; }
+  .field{ margin-bottom:14px; }
+  input[type=text], input[type=tel], input[type=email]{
+    width:100%; padding:13px 14px; border-radius:12px; border:1.5px solid #DCE1EA;
+    font-size:16px; outline:none; transition:border-color .15s;
+    background:#FAFBFD;
+  }
+  input:focus{ border-color:var(--primary); }
+  .optional{ font-weight:400; color:#9AA2B3; text-transform:none; letter-spacing:0; }
+
+  button{
+    width:100%; padding:14px; border:none; border-radius:12px; background:var(--primary);
+    color:white; font-size:15.5px; font-weight:700; letter-spacing:0.01em; cursor:pointer;
+    transition:background .15s, transform .1s; margin-top:2px;
+  }
+  button:hover{ background:var(--primary-dark); }
+  button:active{ transform: scale(0.98); }
+  button:disabled{ background:#B9C2D2; cursor:not-allowed; }
+
+  .msg{
+    margin-top:16px; padding:12px 14px; border-radius:12px; font-size:13.5px; line-height:1.5;
+    display:none;
+  }
+  .msg.show{ display:block; }
+  .msg.good{ background:#EAF5EF; color:var(--good); }
+  .msg.bad{ background:#FBEDE8; color:var(--bad); }
+  .msg.info{ background:var(--ring); color:var(--primary-dark); }
+
+  .fineprint{ margin-top:18px; font-size:11.5px; color:#8B93A6; line-height:1.5; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">Student Induction Program</div>
+    <h1>Mark your attendance</h1>
+    <div class="venue" id="venueLabel">Loading venue details…</div>
+
+    <div class="radar idle" id="radar">
+      <div class="ring"></div><div class="ring"></div><div class="ring"></div>
+      <div class="pin"></div>
+    </div>
+
+    <div class="field">
+      <label for="name">Full name</label>
+      <input type="text" id="name" placeholder="e.g. Aarav Sharma" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label for="branch">Branch</label>
+      <input type="text" id="branch" list="branchList" placeholder="e.g. Computer Science & Engineering" autocomplete="off" />
+      <datalist id="branchList">
+        <option value="Computer Science & Engineering">
+        <option value="Computer Science & Engineering (IoT)">
+        <option value="Electronics & Communication Engineering">
+        <option value="Electrical Engineering">
+        <option value="Mechanical Engineering">
+        <option value="Civil Engineering">
+        <option value="Information Technology">
+        <option value="Textile Engineering">
+      </datalist>
+    </div>
+    <div class="field">
+      <label for="mobile">Mobile number</label>
+      <input type="tel" id="mobile" placeholder="10-digit mobile number" autocomplete="off" maxlength="10" inputmode="numeric" />
+    </div>
+    <div class="field">
+      <label for="email">Email <span class="optional">(optional)</span></label>
+      <input type="email" id="email" placeholder="you@example.com" autocomplete="off" />
+    </div>
+
+    <button id="submitBtn">Check In</button>
+
+    <div class="msg" id="msg"></div>
+
+    <div class="fineprint">Your location is used once, only to confirm you're at the venue. One check-in per mobile number and per device, per day.</div>
+  </div>
+
+<script>
+  const radar = document.getElementById('radar');
+  const msg = document.getElementById('msg');
+  const btn = document.getElementById('submitBtn');
+  const nameInput = document.getElementById('name');
+  const branchInput = document.getElementById('branch');
+  const mobileInput = document.getElementById('mobile');
+  const emailInput = document.getElementById('email');
+  const venueLabel = document.getElementById('venueLabel');
+
+  mobileInput.addEventListener('input', () => {
+    mobileInput.value = mobileInput.value.replace(/\D/g, '').slice(0, 10);
+  });
+
+  function getDeviceId(){
+    let id = localStorage.getItem('induction_device_id');
+    if(!id){
+      id = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem('induction_device_id', id);
+    }
+    return id;
+  }
+  const deviceId = getDeviceId();
+
+  function showMsg(text, type){
+    msg.textContent = text;
+    msg.className = 'msg show ' + type;
+  }
+  function setRadar(state){
+    radar.className = 'radar ' + state;
+  }
+
+  async function readApiResponse(res){
+    const contentType = res.headers.get('content-type') || '';
+    if(!contentType.includes('application/json')){
+      const body = await res.text();
+      const detail = body.trim().startsWith('<')
+        ? 'The server returned the web page instead of the attendance API.'
+        : 'The server returned an unexpected response.';
+      throw new Error(`${detail} Start this project with \"npm start\" (not a static/live server) and open http://localhost:3000.`);
+    }
+    return res.json();
+  }
+
+  async function loadStatus(){
+    try{
+      const res = await fetch(`/api/status?deviceId=${encodeURIComponent(deviceId)}`);
+      const data = await readApiResponse(res);
+      venueLabel.textContent = `${data.venue.label} · within ${data.venue.radius}m`;
+      if(data.deviceAlreadyMarked){
+        showMsg('This device has already marked attendance today. Come back tomorrow.', 'info');
+        btn.disabled = true;
+        setRadar('idle');
+      } else if(!data.window.open){
+        showMsg(`Check-in is only open between ${data.window.start} and ${data.window.end}.`, 'info');
+        btn.disabled = true;
+      }
+    }catch(e){
+      venueLabel.textContent = 'Could not reach the server.';
+    }
+  }
+  loadStatus();
+
+  function getLocation(){
+    return new Promise((resolve, reject) => {
+      if(!navigator.geolocation){
+        reject(new Error('Your browser does not support location services.'));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        pos => resolve(pos.coords),
+        err => {
+          let m = 'Could not get your location.';
+          if(err.code === 1) m = 'Location permission denied. Please allow location access and try again.';
+          if(err.code === 2) m = 'Location unavailable. Try moving to an open area.';
+          if(err.code === 3) m = 'Location request timed out. Try again.';
+          reject(new Error(m));
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
+  }
+
+  btn.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    const branch = branchInput.value.trim();
+    const mobile = mobileInput.value.trim();
+    const email = emailInput.value.trim();
+
+    if(!name){ showMsg('Enter your full name.', 'bad'); return; }
+    if(!branch){ showMsg('Enter your branch.', 'bad'); return; }
+    if(!/^\d{10}$/.test(mobile)){ showMsg('Enter a valid 10-digit mobile number.', 'bad'); return; }
+
+    btn.disabled = true;
+    setRadar('locating');
+    radar.classList.remove('idle','ok','err');
+    showMsg('Getting your location…', 'info');
+
+    try{
+      const coords = await getLocation();
+      const res = await fetch('/api/attendance/mark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name, branch, mobile, email, deviceId,
+          lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy
+        })
+      });
+      const data = await readApiResponse(res);
+      if(data.ok){
+        setRadar('ok');
+        showMsg(data.message + ` (${data.distance}m from venue)`, 'good');
+        btn.disabled = true;
+      } else {
+        setRadar('err');
+        showMsg(data.error, 'bad');
+        btn.disabled = false;
+      }
+    }catch(e){
+      setRadar('err');
+      showMsg(e.message, 'bad');
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

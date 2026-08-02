@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Induction Attendance — Admin</title>
+<style>
+  :root{
+    --bg:#F1F3F6; --card:#fff; --ink:#1B2333; --ink-soft:#5B6478;
+    --primary:#2B4C7E; --primary-dark:#1D3557; --line:#E3E7EE; --good:#2E7D5B; --bad:#B3432B;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap{ max-width:960px; margin:0 auto; padding:28px 20px 60px; }
+  h1{ font-size:22px; margin:0 0 4px; }
+  .sub{ color:var(--ink-soft); font-size:13.5px; margin-bottom:26px; }
+
+  #loginCard{ max-width:360px; margin:80px auto; background:var(--card); padding:28px; border-radius:16px; box-shadow:0 8px 24px rgba(20,30,50,.08); }
+  #loginCard input{ width:100%; padding:12px; border-radius:10px; border:1.5px solid var(--line); margin-bottom:12px; font-size:15px; }
+  #loginCard button{ width:100%; padding:12px; border:none; border-radius:10px; background:var(--primary); color:#fff; font-weight:700; cursor:pointer; }
+
+  .grid{ display:grid; grid-template-columns: 1fr; gap:18px; margin-bottom:22px; max-width:520px; }
+
+  .panel{ background:var(--card); border-radius:16px; padding:22px; box-shadow:0 1px 2px rgba(20,30,50,.05); }
+  .panel h2{ font-size:15px; margin:0 0 14px; }
+  .field{ margin-bottom:12px; }
+  .field label{ display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; }
+  .field input{ width:100%; padding:10px 11px; border-radius:9px; border:1.5px solid var(--line); font-size:14px; }
+  .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  button.primary{ padding:10px 16px; border:none; border-radius:9px; background:var(--primary); color:#fff; font-weight:700; font-size:13.5px; cursor:pointer; }
+  button.primary:hover{ background:var(--primary-dark); }
+  button.ghost{ padding:10px 16px; border:1.5px solid var(--line); border-radius:9px; background:transparent; color:var(--ink); font-weight:600; font-size:13.5px; cursor:pointer; }
+
+  .stat-row{ display:flex; gap:14px; margin-bottom:16px; max-width:520px; }
+  .stat{ flex:1; background:#F7F9FC; border-radius:12px; padding:14px; text-align:center; }
+  .stat .n{ font-size:24px; font-weight:800; color:var(--primary-dark); }
+  .stat .l{ font-size:11.5px; color:var(--ink-soft); margin-top:2px; }
+
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th{ text-align:left; padding:8px 10px; color:var(--ink-soft); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1.5px solid var(--line); }
+  td{ padding:8px 10px; border-bottom:1px solid var(--line); }
+  .toast{ position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:10px 18px; border-radius:10px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show{ opacity:1; }
+</style>
+</head>
+<body>
+
+<div id="loginCard">
+  <h1 style="font-size:18px;">Admin Login</h1>
+  <p class="sub">Induction attendance dashboard</p>
+  <input type="password" id="pw" placeholder="Admin password" />
+  <button onclick="login()">Sign in</button>
+</div>
+
+<div class="wrap" id="dash" style="display:none;">
+  <h1>Induction Attendance</h1>
+  <div class="sub">Venue geofence and live check-ins.</div>
+
+  <div class="stat-row">
+    <div class="stat"><div class="n" id="statPresent">–</div><div class="l">Present today</div></div>
+    <div class="stat"><div class="n" id="statBranches">–</div><div class="l">Branches represented</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Venue &amp; geofence</h2>
+      <div class="field"><label>Venue label</label><input id="venueLabel" /></div>
+      <div class="row2">
+        <div class="field"><label>Latitude</label><input id="venueLat" type="number" step="any" /></div>
+        <div class="field"><label>Longitude</label><input id="venueLng" type="number" step="any" /></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Radius (m)</label><input id="radius" type="number" /></div>
+        <div class="field"><button class="ghost" style="margin-top:22px;width:100%;" onclick="useMyLocation()">Use my location</button></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Window start</label><input id="startTime" type="time" /></div>
+        <div class="field"><label>Window end</label><input id="endTime" type="time" /></div>
+      </div>
+      <button class="primary" onclick="saveSettings()">Save settings</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+      <h2 style="margin:0;">Check-ins</h2>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="date" id="dateFilter" style="padding:8px 10px;border-radius:8px;border:1.5px solid var(--line);font-size:13px;" />
+        <button class="ghost" onclick="loadAttendance()">Refresh</button>
+        <button class="primary" onclick="exportCsv()">Export CSV</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>Name</th><th>Branch</th><th>Mobile</th><th>Email</th><th>Time</th><th>Distance</th></tr></thead>
+      <tbody id="attBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  let PW = sessionStorage.getItem('admin_pw') || '';
+
+  function toast(text){
+    const t = document.getElementById('toast');
+    t.textContent = text; t.classList.add('show');
+    setTimeout(()=>t.classList.remove('show'), 2200);
+  }
+
+  async function api(path, opts={}){
+    opts.headers = Object.assign({ 'x-admin-password': PW, 'Content-Type': 'application/json' }, opts.headers || {});
+    const res = await fetch(path, opts);
+    if(res.status === 401){ sessionStorage.removeItem('admin_pw'); location.reload(); throw new Error('Unauthorized'); }
+    return readApiResponse(res);
+  }
+
+  async function readApiResponse(res){
+    const contentType = res.headers.get('content-type') || '';
+    if(!contentType.includes('application/json')){
+      const body = await res.text();
+      const detail = body.trim().startsWith('<')
+        ? 'The server returned the web page instead of the attendance API.'
+        : 'The server returned an unexpected response.';
+      throw new Error(`${detail} Start this project with \"npm start\" (not a static/live server) and open http://localhost:3000.`);
+    }
+    return res.json();
+  }
+
+  async function login(){
+    PW = document.getElementById('pw').value;
+    const res = await fetch('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: PW}) });
+    const data = await readApiResponse(res);
+    if(data.ok){
+      sessionStorage.setItem('admin_pw', PW);
+      document.getElementById('loginCard').style.display = 'none';
+      document.getElementById('dash').style.display = 'block';
+      document.getElementById('dateFilter').value = new Date().toISOString().slice(0,10);
+      loadSettings(); loadAttendance();
+    } else {
+      toast('Wrong password');
+    }
+  }
+
+  if(PW){
+    document.getElementById('loginCard').style.display = 'none';
+    document.getElementById('dash').style.display = 'block';
+    document.getElementById('dateFilter').value = new Date().toISOString().slice(0,10);
+    loadSettings(); loadAttendance();
+  }
+
+  async function loadSettings(){
+    const s = await api('/api/admin/settings');
+    document.getElementById('venueLabel').value = s.venue_label || '';
+    document.getElementById('venueLat').value = s.venue_lat;
+    document.getElementById('venueLng').value = s.venue_lng;
+    document.getElementById('radius').value = s.radius_m;
+    document.getElementById('startTime').value = s.start_time;
+    document.getElementById('endTime').value = s.end_time;
+  }
+
+  async function saveSettings(){
+    await api('/api/admin/settings', { method:'POST', body: JSON.stringify({
+      venue_label: document.getElementById('venueLabel').value,
+      venue_lat: parseFloat(document.getElementById('venueLat').value),
+      venue_lng: parseFloat(document.getElementById('venueLng').value),
+      radius_m: parseFloat(document.getElementById('radius').value),
+      start_time: document.getElementById('startTime').value,
+      end_time: document.getElementById('endTime').value,
+    })});
+    toast('Settings saved');
+  }
+
+  function useMyLocation(){
+    navigator.geolocation.getCurrentPosition(pos => {
+      document.getElementById('venueLat').value = pos.coords.latitude;
+      document.getElementById('venueLng').value = pos.coords.longitude;
+      toast('Filled in current location');
+    }, () => toast('Could not get location'));
+  }
+
+  async function loadAttendance(){
+    const date = document.getElementById('dateFilter').value;
+    const data = await api('/api/admin/attendance?date=' + date);
+    document.getElementById('statPresent').textContent = data.presentCount;
+    document.getElementById('statBranches').textContent = data.branchCount;
+    const body = document.getElementById('attBody');
+    body.innerHTML = data.present.map(r => `<tr>
+      <td>${r.name}</td><td>${r.branch}</td><td>${r.mobile}</td><td>${r.email || '—'}</td>
+      <td>${new Date(r.timestamp).toLocaleTimeString()}</td>
+      <td>${r.distance_m ? Math.round(r.distance_m)+'m' : '—'}</td>
+    </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:#8B93A6;">No check-ins yet</td></tr>';
+  }
+
+  function exportCsv(){
+    const date = document.getElementById('dateFilter').value;
+    fetch('/api/admin/attendance/export?date=' + date, { headers:{'x-admin-password': PW} })
+      .then(r => r.blob()).then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `attendance_${date}.csv`; a.click();
+      });
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: induction-attendance-system
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/status
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: attendance-data
+      mountPath: /var/data
+      sizeGB: 1
